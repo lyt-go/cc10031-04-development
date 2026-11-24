@@ -77,5 +77,22 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 按生效范围选用的单位标定
+
+标定规则按「测点 + 采样时间」选用，规则带半开生效区间 `[生效起点, 生效终点)` 与优先级，
+相邻规则允许存在获准的生效交叠区，能力实现在 `app/services/calibration_rules.py` 与
+`app/services/unit_calibrate.py`：
+
+- 独占区间命中唯一获准规则直接换算；交叠区高优先级规则确定胜出，同优先级则不擅自换算，
+  仅保留一份「待现场确认」处置记录，经 `POST /api/calibration/overlap/confirm` 确认后补做唯一一次换算。
+- 批量上送（`POST /api/calibration/batches`）先在 `data/raw_uploads/` 保留原点（含实际单位、
+  批次、迟到标记），标定成果关联样本时间、采用规则与原批，每个样本最多一条成果；
+  重送整批按样本键去重并核对原值，原值冲突只记审计不改写。
+- 时间对齐读格 `GET /api/calibration/cell/{point}` 返回格内实际可读标定值，或明确的待确认原因。
+- 溯源 `GET /api/calibration/trace/{sample_key}` 可从成果追到原批、原点与规则并按规则复算；
+  批次核对 `GET /api/calibration/batches/{batch_key}/verify` 校验独占区每样本一条成果、
+  交叠点仅一份处置记录。
+- 端到端场景演示：`backend/.venv/bin/python backend/scripts/demo_calibration.py`。
+
 领域：数据工程
 子方向：数据采集、爬虫与RPA

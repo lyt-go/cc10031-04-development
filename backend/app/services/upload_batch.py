@@ -46,6 +46,46 @@ class UploadBatchService(BaseModuleService):
         return {"batch_key": batch_key, "shard": shard, "records": len(samples),
                 "duration": round(upload_duration, 2), "status": "上送中"}
 
+    def submit_samples(
+        self,
+        batch_key: str,
+        point: str,
+        samples: list[dict[str, Any]],
+        *,
+        late_keys: set[str] | None = None,
+        is_resend: bool = False,
+    ) -> dict[str, Any]:
+        """按批上送原始采样点：后端先保留原点，再按测点+采样时间的生效规则做标定。
+
+        - 允许同一批次包含标定变更前后的样本，规则按各样本自己的采样时间选用；
+        - 迟到记录照常按事件时间参与规则选用，并在原点与成果上保留 is_late 标记；
+        - 重送整批时原点去重、原值核对，每个样本始终最多换算一次；
+        - 同优先级规则交叠的点不换算，仅生成一份待现场确认处置记录。
+        """
+        late_keys = late_keys or set()
+        # 上送批次登记（重送沿用同一批次编号，新增一条交付日志，不覆盖历史）
+        rows = store.rows(self.MODULE)
+        entry = next((r for r in rows if r.get("批次编号") == batch_key), None)
+        if entry is None:
+            entry = self._auto_create_seed(self.MODULE, {
+                "批次编号": batch_key, "分片范围": point, "测点数量": "1",
+                "记录条数": str(len(samples)), "压缩方式": "none",
+                "批次校验值": self._compute_checksum(json.dumps(samples, sort_keys=True, default=str)),
+                "上送时长": "0", "批次水位": str(len(samples)),
+            })
+        self._write_jsonl(
+            self._data_dir("upload_batches") / f"{batch_key}.jsonl",
+            [{"action": "resend" if is_resend else "submit_samples",
+              "batch": batch_key, "point": point, "records": len(samples),
+              "late": len(late_keys), "at": time.time()}]
+        )
+        cal_svc = self._safe_import(
+            "app.services.unit_calibrate", "UnitCalibrateService")()
+        calibration = cal_svc.ingest_batch(
+            batch_key, point, samples, late_keys=late_keys, is_resend=is_resend)
+        return {"batch_key": batch_key, "point": point, "is_resend": is_resend,
+                "records": len(samples), "calibration": calibration}
+
     def complete_batch(self, batch_id: int) -> dict[str, Any]:
         """确认批次上送完成并写入上送记录到交付日志数据集，自动触发单位标定和接入水位推进。"""
         batch = store.find(self.MODULE, batch_id)
